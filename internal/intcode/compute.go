@@ -1,4 +1,4 @@
-package main
+package intcode
 
 import (
 	"bufio"
@@ -82,10 +82,8 @@ func (i *Instruction) GetValue(index int, set []int) int {
 }
 
 // GetInput ...
-func (i *Instruction) GetInput(in io.Reader, out io.Writer, message string) (int, error) {
-	reader := bufio.NewReader(in)
-	fmt.Fprintf(out, "%s\n", message)
-	text, _ := reader.ReadString('\n')
+func (i *Instruction) GetInput(in *bufio.Reader, out io.Writer, message string) (int, error) {
+	text, _ := in.ReadString('\n')
 	t := strings.TrimRightFunc(text, func(r rune) bool {
 		return unicode.IsSpace(r)
 	})
@@ -227,7 +225,7 @@ func GetInstruction(i int, set []int) Instruction {
 }
 
 // ExecInstruction ...
-func ExecInstruction(in io.Reader, out io.Writer, ex Instruction, set []int) int {
+func ExecInstruction(in *bufio.Reader, out io.Writer, ex Instruction, set []int) int {
 	switch ex.OpCode() {
 	case AddOp:
 		r := Add(ex.GetValue(0, set), ex.GetValue(1, set))
@@ -284,10 +282,10 @@ func Mult(i, j int) int {
 }
 
 // ReadCodes ...
-func ReadCodes() []int {
+func ReadCodes(path string) []int {
 	codes := []int{}
 
-	file, err := os.Open("./instructions.txt")
+	file, err := os.Open(path)
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -310,14 +308,10 @@ func ReadCodes() []int {
 }
 
 // Process ...
-func Process(in io.Reader, out io.Writer, position int, set []int) {
+func Process(in *bufio.Reader, out io.Writer, position int, set []int) {
 	instruction := GetInstruction(position, set)
 	position = ExecInstruction(in, out, instruction, set)
 	if position >= 0 {
 		Process(in, out, position, set)
 	}
-}
-
-func main() {
-	Process(os.Stdin, os.Stdout, 0, ReadCodes())
 }

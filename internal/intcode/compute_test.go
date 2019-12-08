@@ -1,6 +1,7 @@
-package main
+package intcode
 
 import (
+	"bufio"
 	"bytes"
 	"fmt"
 	"strings"
@@ -206,7 +207,8 @@ func TestFullIntegration(t *testing.T) {
 
 	for i, set := range inputs {
 		position := 0
-		reader := bytes.NewReader([]byte{'4', '\n'})
+		br := bytes.NewReader([]byte{'4', '\n'})
+		reader := bufio.NewReader(br)
 		writer := bytes.NewBuffer([]byte{})
 		instruction := GetInstruction(position, set)
 		position = ExecInstruction(reader, writer, instruction, set)
