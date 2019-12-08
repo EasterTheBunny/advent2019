@@ -3,41 +3,81 @@ package main
 import (
 	"2019/internal/intcode"
 	"bufio"
-	"bytes"
 	"fmt"
+	"io"
 	"strconv"
 	"strings"
 )
 
+// RunMode ...
+type RunMode int
+
+const (
+	// FeedbackMode ...
+	FeedbackMode RunMode = 1
+	// SimpleMode ...
+	SimpleMode RunMode = 2
+)
+
+// Amplifier ...
+type Amplifier struct {
+	Data   []int
+	Input  *bufio.Reader
+	Output *io.PipeWriter
+}
+
 // RunSetting ...
 func RunSetting(setting []int, set []int) int {
-	amps := make([][]int, len(setting))
+	amps := make([]*Amplifier, len(setting))
+
+	startReader, endWriter := io.Pipe()
 	for i := 0; i < len(amps); i++ {
 		a := make([]int, len(set))
 		copy(a, set)
-		amps[i] = a
-	}
+		amp := Amplifier{
+			Data: a}
 
-	output := 0
-	for i, s := range amps {
-		sl := strconv.Itoa(setting[i]) + "\n" + strconv.Itoa(output) + "\n"
-		inBytes := []byte(sl)
-
-		br := bytes.NewReader(inBytes)
-		reader := bufio.NewReader(br)
-		writer := bytes.NewBuffer([]byte{})
-
-		intcode.Process(reader, writer, 0, s)
-
-		r := strings.Split(strings.TrimRight(fmt.Sprintf("%v", writer), "\n"), "\n")
-		j, err := strconv.Atoi(r[len(r)-1])
-		if err != nil {
-			panic("non-int output")
+		if i == 0 {
+			reader := bufio.NewReader(startReader)
+			amp.Input = reader
+		} else {
+			reader, writer := io.Pipe()
+			amps[i-1].Output = writer
+			buf := bufio.NewReader(reader)
+			amp.Input = buf
 		}
-		output = j
+		amps[i] = &amp
+	}
+	amps[len(amps)-1].Output = endWriter
+
+	done := make(chan bool, len(setting)-1)
+
+	for _, s := range amps {
+		go func(amp *Amplifier) {
+			intcode.Process(amp.Input, amp.Output, 0, amp.Data)
+			done <- true
+		}(s)
 	}
 
-	return output
+	for i, val := range append(setting[1:], setting[0]) {
+		fmt.Fprint(amps[i].Output, fmt.Sprintf("%v\n", val))
+	}
+
+	fmt.Fprint(amps[len(amps)-1].Output, "0\n")
+
+	for i := 0; i < len(setting)-1; i++ {
+		<-done
+	}
+
+	reader := bufio.NewReader(startReader)
+	text, _ := reader.ReadString('\n')
+
+	j, err := strconv.Atoi(strings.TrimRight(text, "\n"))
+	if err != nil {
+		panic("non-int output")
+	}
+
+	return j
 }
 
 // ValidSetting ...
@@ -75,10 +115,17 @@ func SettingsList(min int, max int) [][]int {
 }
 
 // MaxSetting ...
-func MaxSetting(codes []int) (int, []int) {
+func MaxSetting(mode RunMode, codes []int) (int, []int) {
 	max := 0
 	s := []int{0, 0, 0, 0, 0}
-	allSettings := SettingsList(0, 4)
+	allSettings := [][]int{}
+
+	switch mode {
+	case SimpleMode:
+		allSettings = SettingsList(0, 4)
+	case FeedbackMode:
+		allSettings = SettingsList(5, 9)
+	}
 
 	for _, setting := range allSettings {
 		if ValidSetting(setting) {
@@ -96,9 +143,11 @@ func MaxSetting(codes []int) (int, []int) {
 func main() {
 	codes := intcode.ReadCodes("./commands.txt")
 
-	max, _ := MaxSetting(codes)
+	max, _ := MaxSetting(SimpleMode, codes)
+	println(fmt.Sprintf("max value simple mode: %v", max))
+	max, _ = MaxSetting(FeedbackMode, codes)
+	println(fmt.Sprintf("max value feedback mode: %v", max))
 
-	println(fmt.Sprintf("max value: %v", max))
 	// wrong answer: 76332
 	// wrong answer: 25076
 }
