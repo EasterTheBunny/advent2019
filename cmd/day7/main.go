@@ -22,8 +22,8 @@ const (
 // Amplifier ...
 type Amplifier struct {
 	Data   []int
-	Input  *bufio.Reader
-	Output *io.PipeWriter
+	Input  io.Reader
+	Output io.Writer
 }
 
 // RunSetting ...
@@ -38,13 +38,11 @@ func RunSetting(setting []int, set []int) int {
 			Data: a}
 
 		if i == 0 {
-			reader := bufio.NewReader(startReader)
-			amp.Input = reader
+			amp.Input = startReader
 		} else {
 			reader, writer := io.Pipe()
 			amps[i-1].Output = writer
-			buf := bufio.NewReader(reader)
-			amp.Input = buf
+			amp.Input = reader
 		}
 		amps[i] = &amp
 	}
@@ -147,7 +145,4 @@ func main() {
 	println(fmt.Sprintf("max value simple mode: %v", max))
 	max, _ = MaxSetting(FeedbackMode, codes)
 	println(fmt.Sprintf("max value feedback mode: %v", max))
-
-	// wrong answer: 76332
-	// wrong answer: 25076
 }

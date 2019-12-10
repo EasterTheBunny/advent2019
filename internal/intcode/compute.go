@@ -34,97 +34,304 @@ const (
 	LessThan OpCode = 7
 	// Equals ...
 	Equals OpCode = 8
+	// RelativeBase ...
+	RelativeBase OpCode = 9
 	// TerminateOp ...
 	TerminateOp OpCode = 99
 	// PositionMode ...
 	PositionMode ParameterMode = 0
 	// ImmediateMode ...
 	ImmediateMode ParameterMode = 1
+	// RelativeMode ...
+	RelativeMode ParameterMode = 2
 )
-
-// Executable ...
-type Executable interface {
-	OpCode() OpCode
-	GetValue(int, []int) int
-	GetInput(io.Reader, io.Writer, string) (int, error)
-	SetValue(int, int, []int) []int
-	SetOutput(io.Writer, string)
-	SetNext(int)
-	NextInstruction() int
-}
 
 // Instruction ...
 type Instruction struct {
 	Position   int
+	RelPos     int
 	Op         OpCode
 	Parameters []Parameter
 	Modes      []ParameterMode
 	Next       *int
+	DataSet    []int
+	Input      *bufio.Reader
+	Output     io.Writer
 }
 
-// OpCode ...
-func (i *Instruction) OpCode() OpCode {
-	return i.Op
-}
-
-// GetValue ...
-func (i *Instruction) GetValue(index int, set []int) int {
+func (i *Instruction) getValue(index int) (int, error) {
 	mode := i.Modes[index]
 	parm := i.Parameters[index]
 	switch mode {
 	case PositionMode:
-		return set[parm.Value]
+		exp := parm.Value + 1
+		if len(i.DataSet) < exp {
+			n := make([]int, exp)
+			copy(n, i.DataSet)
+			i.DataSet = n
+		}
+		return i.DataSet[parm.Value], nil
 	case ImmediateMode:
-		return parm.Value
+		return parm.Value, nil
+	case RelativeMode:
+		exp := i.RelPos + parm.Value + 1
+		if len(i.DataSet) < exp {
+			n := make([]int, exp)
+			copy(n, i.DataSet)
+			i.DataSet = n
+		}
+		return i.DataSet[i.RelPos+parm.Value], nil
 	}
 
-	return 0
+	return 0, &CodeTerminationError{exitCode: 1, message: "unknown parameter mode"}
 }
 
-// GetInput ...
-func (i *Instruction) GetInput(in *bufio.Reader, out io.Writer, message string) (int, error) {
-	text, _ := in.ReadString('\n')
+func (i *Instruction) getInput() (int, error) {
+	text, err := i.Input.ReadString('\n')
+	if err != nil {
+		return 0, err
+	}
+
 	t := strings.TrimRightFunc(text, func(r rune) bool {
 		return unicode.IsSpace(r)
 	})
 	return strconv.Atoi(t)
 }
 
-// SetValue ...
-func (i *Instruction) SetValue(value int, index int, set []int) []int {
+func (i *Instruction) setValue(index int, value int) error {
 	mode := i.Modes[index]
 	parm := i.Parameters[index]
+
 	switch mode {
 	case PositionMode:
-		set[parm.Value] = value
+		exp := parm.Value + 1
+		if len(i.DataSet) < exp {
+			n := make([]int, exp)
+			copy(n, i.DataSet)
+			i.DataSet = n
+		}
+		i.DataSet[parm.Value] = value
+		return nil
 	case ImmediateMode:
-		set[parm.Position] = value
+		exp := parm.Position + 1
+		if len(i.DataSet) < exp {
+			n := make([]int, exp)
+			copy(n, i.DataSet)
+			i.DataSet = n
+		}
+		i.DataSet[parm.Position] = value
+		return nil
+	case RelativeMode:
+		exp := i.RelPos + parm.Value + 1
+		if len(i.DataSet) < exp {
+			n := make([]int, exp)
+			copy(n, i.DataSet)
+			i.DataSet = n
+		}
+		i.DataSet[i.RelPos+parm.Value] = value
+		return nil
 	}
 
-	return set
+	return &CodeTerminationError{exitCode: 1, message: "unknown parameter mode"}
 }
 
-// SetOutput ...
-func (i *Instruction) SetOutput(out io.Writer, message string) {
-	fmt.Fprintf(out, "%s\n", message)
+func (i *Instruction) setOutput(out int) {
+	fmt.Fprintf(i.Output, "%v\n", out)
 }
 
-// SetNext ...
-func (i *Instruction) SetNext(position int) {
+func (i *Instruction) setNext(position int) {
 	i.Next = &position
 }
 
-// NextInstruction ...
-func (i *Instruction) NextInstruction() int {
+func (i *Instruction) nextPosition() (int, error) {
 	switch i.Op {
 	case TerminateOp:
-		return -1
+		return 0, &CodeTerminationError{exitCode: 0, message: "success"}
 	default:
 		if i.Next != nil {
-			return *i.Next
+			return *i.Next, nil
 		}
-		return i.Position + len(i.Parameters) + 1
+		return i.Position + len(i.Parameters) + 1, nil
 	}
+}
+
+func (i *Instruction) loadParams(code OpCode) (*[]Parameter, error) {
+	var params []Parameter
+
+	switch code {
+	case AddOp, MultiplyOp, LessThan, Equals:
+		params = GetParameters(3, i.Position+1, i.DataSet)
+	case JumpTrue, JumpFalse:
+		params = GetParameters(2, i.Position+1, i.DataSet)
+	case InputOp, OutputOp, RelativeBase:
+		params = GetParameters(1, i.Position+1, i.DataSet)
+	case TerminateOp:
+		params = []Parameter{}
+	default:
+		return nil, &CodeTerminationError{exitCode: 1, message: "unknown opcode"}
+	}
+
+	return &params, nil
+}
+
+// Step ...
+func (i *Instruction) Step() error {
+	pos, err := i.nextPosition()
+	if err != nil {
+		return err
+	}
+
+	code, modes := SplitOp(i.DataSet[pos])
+	i.Op = code
+	i.Position = pos
+	i.Next = nil
+	p, err := i.loadParams(i.Op)
+	if err != nil {
+		return err
+	}
+
+	i.Parameters = *p
+	i.Modes = modes
+	if err != nil {
+		return nil
+	}
+
+	return nil
+}
+
+// Exec ...
+func (i *Instruction) Exec() error {
+	switch i.Op {
+	case AddOp:
+		v1, err := i.getValue(0)
+		if err != nil {
+			return err
+		}
+
+		v2, err := i.getValue(1)
+		if err != nil {
+			return err
+		}
+
+		r := Add(v1, v2)
+		if err != nil {
+			return err
+		}
+
+		err = i.setValue(2, r)
+		if err != nil {
+			return err
+		}
+	case MultiplyOp:
+		v1, err := i.getValue(0)
+		if err != nil {
+			return err
+		}
+
+		v2, err := i.getValue(1)
+		if err != nil {
+			return err
+		}
+
+		r := Mult(v1, v2)
+
+		err = i.setValue(2, r)
+		if err != nil {
+			return err
+		}
+	case InputOp:
+		input, err := i.getInput()
+		if err != nil {
+			return err
+		}
+
+		i.setValue(0, input)
+	case OutputOp:
+		v1, err := i.getValue(0)
+		if err != nil {
+			return err
+		}
+
+		i.setOutput(v1)
+	case JumpTrue:
+		v1, err := i.getValue(0)
+		if err != nil {
+			return err
+		}
+
+		// jump to position if value is not zero
+		if v1 != 0 {
+			v2, err := i.getValue(1)
+			if err != nil {
+				return err
+			}
+
+			i.setNext(v2)
+		}
+	case JumpFalse:
+		v1, err := i.getValue(0)
+		if err != nil {
+			return err
+		}
+
+		// jump to position if value is zero
+		if v1 == 0 {
+			v2, err := i.getValue(1)
+			if err != nil {
+				return err
+			}
+
+			i.setNext(v2)
+		}
+	case LessThan:
+		v1, err := i.getValue(0)
+		if err != nil {
+			return err
+		}
+
+		v2, err := i.getValue(1)
+		if err != nil {
+			return err
+		}
+
+		// if first value is less than second value, set third value to 1 else 0
+		if v1 < v2 {
+			i.setValue(2, 1)
+		} else {
+			i.setValue(2, 0)
+		}
+	case Equals:
+		v1, err := i.getValue(0)
+		if err != nil {
+			return err
+		}
+
+		v2, err := i.getValue(1)
+		if err != nil {
+			return err
+		}
+
+		// if first value is equal to second value, set third value to 1 else 0
+		if v1 == v2 {
+			i.setValue(2, 1)
+		} else {
+			i.setValue(2, 0)
+		}
+	case RelativeBase:
+		v1, err := i.getValue(0)
+		if err != nil {
+			return err
+		}
+
+		i.RelPos = i.RelPos + v1
+	case TerminateOp:
+		return &CodeTerminationError{exitCode: 0, message: "success"}
+	default:
+		m := fmt.Sprintf("unknown instruction code %v", i.Op)
+		return &CodeTerminationError{exitCode: 1, message: m}
+	}
+
+	return nil
 }
 
 // Parameter ...
@@ -148,6 +355,8 @@ func SplitOp(opcode int) (OpCode, []ParameterMode) {
 		p, _ := strconv.Atoi(string(padded[i]))
 		var mode ParameterMode
 		switch p {
+		case 2:
+			mode = RelativeMode
 		case 1:
 			mode = ImmediateMode
 		case 0:
@@ -175,6 +384,8 @@ func SplitOp(opcode int) (OpCode, []ParameterMode) {
 		oc = LessThan
 	case 8:
 		oc = Equals
+	case 9:
+		oc = RelativeBase
 	case 99:
 		oc = TerminateOp
 	default:
@@ -193,82 +404,6 @@ func GetParameters(quantity int, position int, set []int) []Parameter {
 	}
 
 	return params
-}
-
-// GetInstruction ...
-func GetInstruction(i int, set []int) Instruction {
-	code, modes := SplitOp(set[i])
-
-	var params []Parameter
-	var in Instruction
-
-	switch code {
-	case AddOp, MultiplyOp, LessThan, Equals:
-		params = GetParameters(3, i+1, set)
-	case JumpTrue, JumpFalse:
-		params = GetParameters(2, i+1, set)
-	case InputOp, OutputOp:
-		params = GetParameters(1, i+1, set)
-	case TerminateOp:
-		params = []Parameter{}
-	default:
-		panic("unknown op code")
-	}
-
-	in = Instruction{
-		Position:   i,
-		Op:         code,
-		Parameters: params,
-		Modes:      modes}
-
-	return in
-}
-
-// ExecInstruction ...
-func ExecInstruction(in *bufio.Reader, out io.Writer, ex Instruction, set []int) int {
-	switch ex.OpCode() {
-	case AddOp:
-		r := Add(ex.GetValue(0, set), ex.GetValue(1, set))
-		set = ex.SetValue(r, 2, set)
-	case MultiplyOp:
-		r := Mult(ex.GetValue(0, set), ex.GetValue(1, set))
-		set = ex.SetValue(r, 2, set)
-	case InputOp:
-		input, _ := ex.GetInput(in, out, "Enter input value: ")
-		set = ex.SetValue(input, 0, set)
-	case OutputOp:
-		ex.SetOutput(out, fmt.Sprintf("%v", ex.GetValue(0, set)))
-	case JumpTrue:
-		if ex.GetValue(0, set) != 0 {
-			ex.SetNext(ex.GetValue(1, set))
-		}
-	case JumpFalse:
-		if ex.GetValue(0, set) == 0 {
-			ex.SetNext(ex.GetValue(1, set))
-		}
-	case LessThan:
-		a := ex.GetValue(0, set)
-		b := ex.GetValue(1, set)
-		if a < b {
-			ex.SetValue(1, 2, set)
-		} else {
-			ex.SetValue(0, 2, set)
-		}
-	case Equals:
-		a := ex.GetValue(0, set)
-		b := ex.GetValue(1, set)
-		if a == b {
-			ex.SetValue(1, 2, set)
-		} else {
-			ex.SetValue(0, 2, set)
-		}
-	case TerminateOp:
-		fallthrough
-	default:
-		return ex.NextInstruction()
-	}
-
-	return ex.NextInstruction()
 }
 
 // Add ...
@@ -307,11 +442,44 @@ func ReadCodes(path string) []int {
 	return codes
 }
 
+// CodeTerminationError ...
+type CodeTerminationError struct {
+	exitCode int
+	message  string
+}
+
+// Error ...
+func (e *CodeTerminationError) Error() string {
+	return fmt.Sprintf("execution terminated with exit code %v; %s", e.exitCode, e.message)
+}
+
+func newInstructionSet(startPosition int, dataSet []int) *Instruction {
+	inst := &Instruction{
+		Position: -1,
+		DataSet:  dataSet,
+		Next:     &startPosition}
+
+	return inst
+}
+
 // Process ...
-func Process(in *bufio.Reader, out io.Writer, position int, set []int) {
-	instruction := GetInstruction(position, set)
-	position = ExecInstruction(in, out, instruction, set)
-	if position >= 0 {
-		Process(in, out, position, set)
+func Process(in io.Reader, out io.Writer, position int, set []int) {
+	comp := newInstructionSet(position, set)
+	reader := bufio.NewReader(in)
+
+	comp.Input = reader
+	comp.Output = out
+
+	var err error
+	for {
+		err = comp.Step()
+		if err != nil {
+			break
+		}
+
+		err = comp.Exec()
+		if err != nil {
+			break
+		}
 	}
 }
